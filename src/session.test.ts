@@ -1,7 +1,13 @@
-import { expect, test, vi, describe, beforeEach } from 'vitest';
+import { EventEmitter } from 'node:events';
+
+import {
+    beforeEach,
+    describe,
+    expect, test, vi,
+} from 'vitest';
+
+import AcpProcess from './acp';
 import { SessionManager } from './session';
-import { AcpProcess } from './acp';
-import { EventEmitter } from 'events';
 import { WorkspaceManager } from './workspaces';
 
 vi.mock('./acp', () => {
@@ -21,7 +27,7 @@ vi.mock('./acp', () => {
         };
         return emitter;
     });
-    return { AcpProcess };
+    return { default: AcpProcess };
 });
 
 vi.mock('./workspaces', () => {
@@ -54,7 +60,7 @@ describe('SessionManager', () => {
         const manager = new SessionManager(workspaceManager);
         await manager.initialize();
         const sessionId = await manager.createSession('default');
-        
+
         const sessionBefore = manager.getSession(sessionId);
         expect(sessionBefore?.name).toBe('Untitled Session');
 
@@ -76,8 +82,8 @@ describe('SessionManager', () => {
         const manager = new SessionManager(workspaceManager);
         await manager.initialize();
         const sessionId = await manager.createSession('default');
-        
-        const proc = (manager as any).acpProcess as any;
+
+        const proc = (manager as any).acpProcess;
         expect(proc).toBeDefined();
 
         proc._simulateExit(1);
@@ -95,12 +101,12 @@ describe('SessionManager', () => {
                 'python-tool': {
                     command: 'python',
                     args: ['-m', 'my_tool'],
-                    env: { 'PYTHONUNBUFFERED': '1' },
+                    env: { PYTHONUNBUFFERED: '1' },
                 },
                 'node-server': {
                     command: 'node',
                     args: ['server.js'],
-                    env: { 'PORT': '8080', 'NODE_ENV': 'production' },
+                    env: { PORT: '8080', NODE_ENV: 'production' },
                 },
             };
 
@@ -126,7 +132,7 @@ describe('SessionManager', () => {
             ];
 
             transformed.forEach((t: any) => t.env.sort((a: any, b: any) => a.name.localeCompare(b.name)));
-            expected.forEach(e => e.env.sort((a, b) => a.name.localeCompare(b.name)));
+            expected.forEach((e) => e.env.sort((a, b) => a.name.localeCompare(b.name)));
             transformed.sort((a: any, b: any) => a.name.localeCompare(b.name));
             expected.sort((a, b) => a.name.localeCompare(b.name));
 
@@ -172,13 +178,13 @@ describe('SessionManager', () => {
             await manager.initialize();
             sessionId = await manager.createSession('default');
 
-            const acpProcess = (manager as any).acpProcess;
+            const { acpProcess } = (manager as any);
             acpProcess.prompt = vi.fn().mockImplementation(async (acpSessionId, { prompt }) => {
                 const isCompression = prompt.some((p: any) => p.text?.includes('<state_snapshot>'));
                 if (isCompression) {
                     // Simulate the agent returning a summary via chunks
-                    const summary = `<state_snapshot><overall_goal>Test Goal</overall_goal></state_snapshot>`;
-                    const tempAcpId = [...(manager as any).acpToLogical.keys()].find(key => (manager as any).acpToLogical.get(key).startsWith('temp-compression'));
+                    const summary = '<state_snapshot><overall_goal>Test Goal</overall_goal></state_snapshot>';
+                    const tempAcpId = [...(manager as any).acpToLogical.keys()].find((key) => (manager as any).acpToLogical.get(key).startsWith('temp-compression'));
 
                     // Simulate the async response flow
                     setTimeout(() => {
@@ -208,14 +214,14 @@ describe('SessionManager', () => {
             // 3. Verify
             const session = manager.getSession(sessionId)!;
             expect(session.messages.length).toBe(originalMessageCount + 1);
-            const summaryMessage = session.messages.find(m => m.type === 'history_summary');
+            const summaryMessage = session.messages.find((m) => m.type === 'history_summary');
             expect(summaryMessage).toBeDefined();
         });
 
         test('should abort compression if new history is not smaller', async () => {
             // 1. Populate with short history
-             manager.addUserMessage(sessionId, [{ type: 'text', text: `short message` }]);
-            (manager as any)._handleAgentResponse(sessionId, { type: 'chunk', sessionUpdate: 'agent_message_chunk', content: { text: `short response` } });
+            manager.addUserMessage(sessionId, [{ type: 'text', text: 'short message' }]);
+            (manager as any)._handleAgentResponse(sessionId, { type: 'chunk', sessionUpdate: 'agent_message_chunk', content: { text: 'short response' } });
             const originalMessages = [...manager.getSession(sessionId)!.messages];
 
             // 2. Compress
@@ -235,9 +241,9 @@ describe('SessionManager', () => {
             }
 
             // 2. This is the turn that should be preserved
-            manager.addUserMessage(sessionId, [{ type: 'text', text: `user message to keep` }]);
-            (manager as any)._handleAgentResponse(sessionId, { type: 'chunk', sessionUpdate: 'agent_message_chunk', content: { text: `agent response to keep` } });
-            
+            manager.addUserMessage(sessionId, [{ type: 'text', text: 'user message to keep' }]);
+            (manager as any)._handleAgentResponse(sessionId, { type: 'chunk', sessionUpdate: 'agent_message_chunk', content: { text: 'agent response to keep' } });
+
             const originalMessageCount = manager.getSession(sessionId)!.messages.length;
             expect(originalMessageCount).toBe(32); // 15 pairs + 1 pair
 
@@ -248,7 +254,7 @@ describe('SessionManager', () => {
             // 4. Verify
             const newSession = manager.getSession(sessionId)!;
             expect(newSession.messages.length).toBe(originalMessageCount + 1);
-            const summaryIndex = newSession.messages.findIndex(m => m.type === 'history_summary');
+            const summaryIndex = newSession.messages.findIndex((m) => m.type === 'history_summary');
             expect(summaryIndex).not.toBe(-1);
             // The message after the summary should be the first message of the "kept" history
             expect((newSession.messages[summaryIndex + 1] as any).content[0].text).toBe('This is user message number 10, which is part of a long conversation.');
@@ -258,7 +264,7 @@ describe('SessionManager', () => {
     describe('Non-destructive compressHistory', () => {
         let manager: SessionManager;
         let sessionId: string;
-        const summaryText = `<state_snapshot><overall_goal>Test Goal</overall_goal></state_snapshot>`;
+        const summaryText = '<state_snapshot><overall_goal>Test Goal</overall_goal></state_snapshot>';
 
         beforeEach(async () => {
             const workspaceManager = new WorkspaceManager();
@@ -266,11 +272,11 @@ describe('SessionManager', () => {
             await manager.initialize();
             sessionId = await manager.createSession('default');
 
-            const acpProcess = (manager as any).acpProcess;
+            const { acpProcess } = (manager as any);
             acpProcess.prompt = vi.fn().mockImplementation(async (acpSessionId, { prompt }) => {
                 const isCompression = prompt.some((p: any) => p.text?.includes('<state_snapshot>'));
                 if (isCompression) {
-                    const tempAcpId = [...(manager as any).acpToLogical.keys()].find(key => (manager as any).acpToLogical.get(key).startsWith('temp-compression'));
+                    const tempAcpId = [...(manager as any).acpToLogical.keys()].find((key) => (manager as any).acpToLogical.get(key).startsWith('temp-compression'));
                     setTimeout(() => {
                         acpProcess.emit('chunk', {
                             sessionId: tempAcpId,
@@ -294,7 +300,7 @@ describe('SessionManager', () => {
 
             const session = manager.getSession(sessionId)!;
             expect(session.messages.length).toBe(originalMessageCount + 1);
-            const summaryMessage = session.messages.find(m => m.type === 'history_summary');
+            const summaryMessage = session.messages.find((m) => m.type === 'history_summary');
             expect(summaryMessage).toBeDefined();
             expect((summaryMessage as any).summary).toBe(summaryText);
         });
@@ -307,7 +313,7 @@ describe('SessionManager', () => {
 
             const promptContent = (manager as any)._composePrompt(sessionId, [{ type: 'text', text: 'current prompt' }]);
             const promptText = promptContent.map((p: any) => p.text).join('');
-            
+
             expect(promptText).toContain('## User\nmessage 1');
             expect(promptText).toContain('## User\nmessage 2');
             expect(promptText).toContain('current prompt');
@@ -363,7 +369,7 @@ describe('SessionManager', () => {
             newSessionMock.mockResolvedValueOnce({ sessionId: 'new-branch-id' });
 
             originalSessionId = await manager.createSession('default');
-            
+
             // Manually add messages to control the history for the test
             const session = (manager as any).sessions.get(originalSessionId);
             userMessage = { id: 'msg-1', type: 'user', content: [{ type: 'text', text: 'Hello' }] };

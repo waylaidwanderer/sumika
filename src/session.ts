@@ -1,21 +1,32 @@
-import { AcpProcess } from './acp';
-import type { SSEStreamingApi } from 'hono/streaming';
-import { promises as fs } from 'fs';
-import * as path from 'path';
-import { debounce, DebouncedFunc } from 'lodash';
-import * as mime from 'mime-types';
+import { promises as fs } from 'node:fs';
 import {
-    SessionData,
-    Message,
-    UserMessage,
-    AgentMessage,
-    ThoughtMessage,
-    ToolCallMessage,
-    PromptContent,
-} from '@waylaidwanderer/sumika-types';
-import { WorkspaceManager } from './workspaces';
+    basename,
+    extname,
+    join, resolve,
+} from 'node:path';
+
+import { debounce } from 'lodash';
+import { lookup } from 'mime-types';
+
+import AcpProcess from './acp';
+import logger from './logger';
 import { loadSettings } from './settings';
-import { logger } from './logger';
+
+import type {
+    Message,
+
+    Message,
+    PromptContent,
+    SessionData,
+    SessionData,
+    ToolCallMessage,
+    ToolCallMessage,
+    UserMessage,
+    UserMessage,
+} from '@waylaidwanderer/sumika-types';
+import type { SSEStreamingApi } from 'hono/streaming';
+
+import type { WorkspaceManager } from './workspaces';
 
 const HISTORY_SPLIT_RATIO = 0.7;
 
@@ -85,32 +96,31 @@ interface InMemorySession extends SessionData {
 
 let messageIdCounter = 0;
 
-function _getPromptCharCount(promptContent: PromptContent[]): number {
-    return promptContent
-        .map(p => (p.type === 'text' ? p.text : ''))
-        .join('').length;
-}
-
-export class SessionManager {
+export default class SessionManager {
     private sessions = new Map<string, InMemorySession>();
+
     private acpToLogical = new Map<string, string>();
-    private _debouncedSave: DebouncedFunc<(sessionId: string) => void> | ((sessionId: string) => void);
+
+    private debouncedSave: (() => void) | null = null;
+
     private workspaceManager: WorkspaceManager;
+
     private SESSIONS_DIR: string;
+
     private acpProcess?: AcpProcess;
 
     constructor(workspaceManager: WorkspaceManager) {
         this.workspaceManager = workspaceManager;
-        this.SESSIONS_DIR = path.join(this.workspaceManager.sumikaDir, 'sessions');
+        this.SESSIONS_DIR = join(this.workspaceManager.sumikaDir, 'sessions');
 
         const performSave = async (sessionId: string) => {
             const session = this.sessions.get(sessionId);
             if (!session) return;
 
             try {
-                const sessionDir = path.join(this.SESSIONS_DIR, session.workspaceId);
+                const sessionDir = join(this.SESSIONS_DIR, session.workspaceId);
                 await fs.mkdir(sessionDir, { recursive: true });
-                const filePath = path.join(sessionDir, `${sessionId}.json`);
+                const filePath = join(sessionDir, `${sessionId}.json`);
                 const dataToSave = { ...session };
                 delete dataToSave.streamController;
                 await fs.writeFile(filePath, JSON.stringify(dataToSave, null, 2), 'utf-8');
@@ -120,109 +130,109 @@ export class SessionManager {
         };
 
         if (process.env.NODE_ENV === 'test') {
-            this._debouncedSave = performSave;
+            this.debouncedSave = performSave;
         } else {
-            this._debouncedSave = debounce(performSave, 1500);
+            this.debouncedSave = debounce(performSave, 1500);
         }
 
         if (process.env.NODE_ENV !== 'test') {
-            this._loadSessionsFromDir();
+            await this.loadSessionsFromDir();
         }
     }
 
-    private _updateMessageIdCounter() {
+    private updateMessageIdCounter() {
         let maxId = -1;
-        for (const session of this.sessions.values()) {
-            for (const message of session.messages) {
+        this.sessions.forEach((session) => {
+            session.messages.forEach((message) => {
                 if (message.id.startsWith('msg-')) {
                     const num = parseInt(message.id.split('-')[1], 10);
-                    if (!isNaN(num) && num > maxId) {
+                    if (!Number.isNaN(num) && num > maxId) {
                         maxId = num;
                     }
                 }
-            }
-        }
+            });
+        });
         messageIdCounter = maxId + 1;
         logger.info(`Message ID counter initialized to ${messageIdCounter}`);
     }
 
-    private _setupEventHandlers(process: AcpProcess) {
-        process.on('chunk', (data: any) => {
-            const { sessionId: acpSessionId, ...rest } = data || {};
+    private setupEventHandlers(process: AcpProcess) {
+        process.on('chunk', (data: unknown) => {
+            const { sessionId: acpSessionId, ...rest } = data ?? {};
             if (!acpSessionId) return;
-            const logicalId = this.acpToLogical.get(acpSessionId) || acpSessionId;
-            this._handleAgentResponse(logicalId, { type: 'chunk', ...rest });
+            const logicalId = this.acpToLogical.get(acpSessionId) ?? acpSessionId;
+            this.handleAgentResponse(logicalId, { type: 'chunk', ...rest });
         });
-        process.on('end', (data: any) => {
-            const { sessionId: acpSessionId, ...rest } = data || {};
+        process.on('end', (data: unknown) => {
+            const { sessionId: acpSessionId, ...rest } = data ?? {};
             if (!acpSessionId) return;
-            const logicalId = this.acpToLogical.get(acpSessionId) || acpSessionId;
-            this._handleAgentResponse(logicalId, { type: 'end', ...rest });
+            const logicalId = this.acpToLogical.get(acpSessionId) ?? acpSessionId;
+            this.handleAgentResponse(logicalId, { type: 'end', ...rest });
         });
-        process.on('permission_request', (data: any) => {
-            const { sessionId: acpSessionId, ...rest } = data || {};
+        process.on('permission_request', (data: unknown) => {
+            const { sessionId: acpSessionId, ...rest } = data ?? {};
             if (!acpSessionId) return;
-            const logicalId = this.acpToLogical.get(acpSessionId) || acpSessionId;
-            this._handleAgentResponse(logicalId, { type: 'permission_request', ...rest });
+            const logicalId = this.acpToLogical.get(acpSessionId) ?? acpSessionId;
+            this.handleAgentResponse(logicalId, { type: 'permission_request', ...rest });
         });
-        process.on('error', (data: any) => {
-            const { sessionId: acpSessionId, ...rest } = data || {};
+        process.on('error', (data: unknown) => {
+            const { sessionId: acpSessionId, ...rest } = data ?? {};
             if (!acpSessionId) {
                 // deliver raw error if mapping is unavailable
-                this._handleAgentResponse((rest as any)?.sessionId || 'unknown', { type: 'error', ...rest });
+                this.handleAgentResponse((rest)?.sessionId ?? 'unknown', { type: 'error', ...rest });
                 return;
             }
-            const logicalId = this.acpToLogical.get(acpSessionId) || acpSessionId;
-            this._handleAgentResponse(logicalId, { type: 'error', ...rest });
+            const logicalId = this.acpToLogical.get(acpSessionId) ?? acpSessionId;
+            this.handleAgentResponse(logicalId, { type: 'error', ...rest });
         });
     }
 
-    private _emitHistoryCompressed(sessionId: string, summaryMessage: Message) {
+    private emitHistoryCompressed(sessionId: string, summaryMessage: Message) {
         const session = this.sessions.get(sessionId);
         if (session?.streamController) {
             try {
-                session.streamController.write(JSON.stringify({
+                session.streamController.write(`${JSON.stringify({
                     type: 'history_compressed',
                     summaryMessage,
-                }) + '\n');
+                })}\n`);
             } catch (e) {
-                logger.error({ err: e, sessionId }, "Error writing history_compressed event to stream");
+                logger.error({ err: e, sessionId }, 'Error writing history_compressed event to stream');
             }
         }
     }
 
-    private _handleAgentResponse(sessionId: string, data: any) {
+    private handleAgentResponse(sessionId: string, data: unknown) {
         const session = this.sessions.get(sessionId);
         if (!session) return;
 
-
-        if (data.type === 'chunk' && data.sessionUpdate === 'tool_call' && data.toolCallId) {
-            const toolName = data.toolCallId.split('-')[0];
+        let newData = data;
+        if (newData.type === 'chunk' && newData.sessionUpdate === 'tool_call' && newData.toolCallId) {
+            const toolName = newData.toolCallId.split('-')[0];
             if (toolName) {
                 const formattedName = toolName
                     .replace(/_/g, ' ')
                     .replace(/\b\w/g, (l: string) => l.toUpperCase());
-                data.title = `${formattedName}: ${data.title}`;
+                newData = { ...newData, title: `${formattedName}: ${newData.title}` };
             }
         }
 
-        switch (data.type) {
+        switch (newData.type) {
             case 'end':
                 session.status = 'idle';
                 break;
 
-            case 'permission_request':
-                const toolCall = data.toolCall;
+            case 'permission_request': {
+                const { toolCall } = newData;
                 const existingToolCallMsg = session.messages.find(
-                    (m): m is ToolCallMessage => m.type === 'tool_call' && m.toolCallId === toolCall.toolCallId
+                    (m): m is ToolCallMessage => m.type === 'tool_call' && m.toolCallId === toolCall.toolCallId,
                 );
 
                 if (existingToolCallMsg) {
                     existingToolCallMsg.status = 'awaiting_permission';
-                    existingToolCallMsg.requestId = data.requestId;
-                    existingToolCallMsg.options = data.options;
+                    existingToolCallMsg.requestId = newData.requestId;
+                    existingToolCallMsg.options = newData.options;
                 } else {
-                    const diffContent = toolCall.content?.find((c: any) => c.type === 'diff');
+                    const diffContent = toolCall.content?.find((c: unknown) => c.type === 'diff');
                     if (diffContent) {
                         toolCall.details = {
                             path: diffContent.path,
@@ -233,139 +243,157 @@ export class SessionManager {
                     }
 
                     session.messages.push({
-                        id: `msg-${messageIdCounter++}`,
+                        id: `msg-${messageIdCounter += 1}`,
                         type: 'tool_call',
                         toolCallId: toolCall.toolCallId,
                         kind: toolCall.kind,
                         title: toolCall.title,
-                        input: toolCall.content?.map((c: any) => c.text || '').join('\n') || '',
+                        input: toolCall.content?.map((c: unknown) => (typeof c === 'object' && c && 'text' in c ? c.text : '') ?? '').join('\n') ?? '',
                         output: '',
                         status: 'awaiting_permission',
                         details: toolCall.details,
-                        requestId: data.requestId,
-                        options: data.options,
+                        requestId: newData.requestId,
+                        options: newData.options,
                     });
                 }
                 break;
+            }
 
             case 'chunk':
-                this._handleChunk(session, data);
+                this.handleChunk(session, newData);
                 break;
-            
+
             case 'error':
 
                 {
-                    const details = (data as any)?.error?.data?.details || (data as any)?.error?.message;
+                    const details = (newData)?.error?.data?.details ?? (newData)?.error?.message;
                     const text = typeof details === 'string' ? details : '';
                     if (text.includes('Session not found')) {
                         break;
                     }
                     if (/abort/i.test(text)) {
-
                         session.status = 'idle';
                         break;
                     }
                 }
                 session.messages.push({
-                    id: `msg-${messageIdCounter++}`,
+                    id: `msg-${messageIdCounter += 1}`,
                     type: 'error',
-                    error: (data as any).error || data,
+                    error: (newData).error ?? newData,
                 });
                 session.status = 'idle';
+                break;
+            default:
                 break;
         }
 
         if (session.streamController) {
             try {
-                session.streamController.write(JSON.stringify(data) + '\n');
+                session.streamController.write(`${JSON.stringify(data)}\n`);
             } catch (e) {
-                logger.error({ err: e }, "Error writing to stream, it might be closed");
+                logger.error({ err: e }, 'Error writing to stream, it might be closed');
             }
         }
-        
-        this._saveSessionToFile(sessionId);
+
+        this.saveSessionToFile(sessionId);
     }
 
-    private _handleChunk(session: InMemorySession, data: any) {
+    private static handleChunk(session: InMemorySession, data: unknown) {
         const lastMessage = session.messages[session.messages.length - 1];
 
-        switch (data.sessionUpdate) {
-            case 'agent_message_chunk':
-                if (lastMessage?.type === 'agent') {
-                    lastMessage.content += data.content.text;
-                    data.messageId = lastMessage.id;
-                } else {
-                    const newMessageId = `msg-${messageIdCounter++}`;
+        if (typeof data === 'object' && data !== null) {
+            const mutableData = data as Record<string, unknown>;
+
+            switch (mutableData.sessionUpdate) {
+                case 'agent_message_chunk':
+                    if (lastMessage?.type === 'agent') {
+                        lastMessage.content += mutableData.content.text;
+                        mutableData.messageId = lastMessage.id;
+                    } else {
+                        const newMessageId = `msg-${messageIdCounter += 1}`;
+                        session.messages.push({
+                            id: newMessageId,
+                            type: 'agent',
+                            content: mutableData.content.text,
+                        });
+                        mutableData.messageId = newMessageId;
+                    }
+                    break;
+
+                case 'agent_thought_chunk':
                     session.messages.push({
-                        id: newMessageId,
-                        type: 'agent',
-                        content: data.content.text,
+                        id: `msg-${messageIdCounter += 1}`,
+                        type: 'thought',
+                        content: mutableData.content.text,
                     });
-                    data.messageId = newMessageId;
+                    break;
+
+                case 'tool_call': {
+                    const toolCallDetails: {
+                        path?: string;
+                        content?: string;
+                        oldContent?: string;
+                        rawContent?: string;
+                    } = {};
+                    const toolCallDiff = mutableData.content?.find((c: unknown) => typeof c === 'object' && c !== null && 'type' in c && c.type === 'diff');
+                    if (toolCallDiff) {
+                        toolCallDetails.path = toolCallDiff.path;
+                        toolCallDetails.oldContent = toolCallDiff.oldText;
+                        toolCallDetails.content = toolCallDiff.newText;
+                    }
+                    if (mutableData.content) {
+                        toolCallDetails.rawContent = JSON.stringify(mutableData.content, null, 2);
+                    }
+
+                    session.messages.push({
+                        id: `msg-${messageIdCounter += 1}`,
+                        type: 'tool_call',
+                        toolCallId: mutableData.toolCallId,
+                        kind: mutableData.kind,
+                        title: mutableData.title,
+                        input: mutableData.content?.map((c: unknown) => (typeof c === 'object' && c !== null && 'text' in c && typeof c.text === 'string' ? c.text : '') ?? '').join('\n') ?? '',
+                        output: '',
+                        status: mutableData.status,
+                        details: toolCallDetails,
+                    });
+                    break;
                 }
-                break;
 
-            case 'agent_thought_chunk':
-                session.messages.push({
-                    id: `msg-${messageIdCounter++}`,
-                    type: 'thought',
-                    content: data.content.text,
-                });
-                break;
+                case 'tool_call_update': {
+                    const toolCallMsg = session.messages.find(
+                        (m): m is ToolCallMessage => m.type === 'tool_call' && m.toolCallId === mutableData.toolCallId,
+                    );
 
-            case 'tool_call':
-                const toolCallDetails: { path?: string, content?: string, oldContent?: string, rawContent?: string } = {};
-                const toolCallDiff = data.content?.find((c: any) => c.type === 'diff');
-                if (toolCallDiff) {
-                    toolCallDetails.path = toolCallDiff.path;
-                    toolCallDetails.oldContent = toolCallDiff.oldText;
-                    toolCallDetails.content = toolCallDiff.newText;
-                }
-                if (data.content) {
-                    toolCallDetails.rawContent = JSON.stringify(data.content, null, 2);
-                }
-
-                session.messages.push({
-                    id: `msg-${messageIdCounter++}`,
-                    type: 'tool_call',
-                    toolCallId: data.toolCallId,
-                    kind: data.kind,
-                    title: data.title,
-                    input: data.content?.map((c: any) => c.text || '').join('\n') || '',
-                    output: '',
-                    status: data.status,
-                    details: toolCallDetails,
-                });
-                break;
-            
-            case 'tool_call_update':
-                const toolCallMsg = session.messages.find(
-                    (m): m is ToolCallMessage => m.type === 'tool_call' && m.toolCallId === data.toolCallId
-                );
-
-                if (toolCallMsg) {
-                    toolCallMsg.details = toolCallMsg.details || {};
-                    if (data.content) {
-                        toolCallMsg.details.rawContent = JSON.stringify(data.content, null, 2);
-                        for (const item of data.content) {
-                            if (item.type === 'diff') {
-                                toolCallMsg.details.path = item.path;
-                                toolCallMsg.details.oldContent = item.oldText;
-                                toolCallMsg.details.content = item.newText;
-                            } else {
-                                const text = (item as any).content?.text ?? (item as any).text;
-                                if (text) {
-                                    toolCallMsg.output = (toolCallMsg.output || '') + text;
+                    if (toolCallMsg) {
+                        toolCallMsg.details = toolCallMsg.details ?? {};
+                        if (mutableData.content) {
+                            toolCallMsg.details.rawContent = JSON.stringify(mutableData.content, null, 2);
+                            mutableData.content.forEach((item: unknown) => {
+                                if (typeof item === 'object' && item !== null && 'type' in item && item.type === 'diff') {
+                                    toolCallMsg.details.path = item.path;
+                                    toolCallMsg.details.oldContent = item.oldText;
+                                    toolCallMsg.details.content = item.newText;
+                                } else {
+                                    const text = (item as {
+                                        content?: { text?: string };
+                                        text?: string;
+                                    })?.content?.text ?? (item as { text?: string })?.text;
+                                    if (text) {
+                                        toolCallMsg.output = (toolCallMsg.output ?? '') + text;
+                                    }
                                 }
-                            }
+                            });
+                        }
+
+                        if (mutableData.status) {
+                            toolCallMsg.status = mutableData.status;
                         }
                     }
-
-                    if (data.status) {
-                        toolCallMsg.status = data.status;
-                    }
+                    break;
                 }
-                break;
+                default:
+                    break;
+            }
         }
     }
 
@@ -379,53 +407,52 @@ export class SessionManager {
         const mentionRegex = /@(\S+)/g;
         const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB
 
-        for (const block of content) {
+        content.forEach(async (block) => {
             if (block.type === 'text') {
                 const matches = [...block.text.matchAll(mentionRegex)];
-                const uniquePaths = [...new Set(matches.map(m => m[1]))];
-                
+                const uniquePaths = [...new Set(matches.map((m) => m[1]))];
+
                 const resources: PromptContent[] = [];
 
-                for (const relativePath of uniquePaths) {
-                    const absolutePath = path.resolve(workspace.path, relativePath);
+                uniquePaths.forEach(async (relativePath) => {
+                    const absolutePath = resolve(workspace.path, relativePath);
 
                     if (!absolutePath.startsWith(workspace.path)) {
-                        logger.warn({ relativePath, workspacePath: workspace.path }, `Skipping file mention outside of workspace`);
-                        continue;
+                        logger.warn({ relativePath, workspacePath: workspace.path }, 'Skipping file mention outside of workspace');
+                        return;
                     }
 
                     try {
                         const stats = await fs.stat(absolutePath);
                         if (stats.isDirectory()) {
-                            logger.warn({ relativePath }, `Skipping directory mention`);
-                            continue;
+                            logger.warn({ relativePath }, 'Skipping directory mention');
+                            return;
                         }
                         if (stats.size > MAX_FILE_SIZE) {
-                            logger.warn({ relativePath, size: stats.size, maxSize: MAX_FILE_SIZE }, `Skipping oversized file`);
-                            continue;
+                            logger.warn({ relativePath, size: stats.size, maxSize: MAX_FILE_SIZE }, 'Skipping oversized file');
+                            return;
                         }
 
                         const fileContent = await fs.readFile(absolutePath, 'utf-8');
-                        const mimeType = mime.lookup(absolutePath) || 'application/octet-stream';
+                        const mimeType = lookup(absolutePath) ?? 'application/octet-stream';
 
                         resources.push({
                             type: 'resource',
                             resource: {
                                 uri: `file://${absolutePath}`,
-                                mimeType: mimeType,
+                                mimeType,
                                 text: fileContent,
                             },
                         });
                     } catch (error) {
-                        logger.warn({ relativePath, err: error }, `Skipping non-existent or unreadable file mention`);
-                        continue;
+                        logger.warn({ relativePath, err: error }, 'Skipping non-existent or unreadable file mention');
                     }
-                }
+                });
                 finalContent.push(...resources, block);
             } else {
                 finalContent.push(block);
             }
-        }
+        });
         return finalContent;
     }
 
@@ -435,18 +462,18 @@ export class SessionManager {
             throw new Error('Session not found');
         }
 
-
-        if (session.messages.filter(m => m.type === 'user').length === 0) {
-            let firstText = content.find(c => c.type === 'text')?.text || 'Untitled Session';
+        if (session.messages.filter((m) => m.type === 'user').length === 0) {
+            let firstText = content.find((c) => c.type === 'text')?.text ?? 'Untitled Session';
             if (firstText.length > 100) {
                 firstText = `${firstText.slice(0, 100)}...`;
             }
             session.name = firstText;
         }
 
-        const sanitizedContent = content.map(block => {
+        const sanitizedContent = content.map((block) => {
             if (block.type === 'resource' && block.resource?.text) {
-                const { text, ...resourceWithoutText } = block.resource;
+                const resourceWithoutText = { ...block.resource };
+                delete resourceWithoutText.text;
                 return {
                     ...block,
                     resource: resourceWithoutText,
@@ -456,29 +483,29 @@ export class SessionManager {
         });
 
         const newUserMessage: UserMessage = {
-            id: `msg-${messageIdCounter++}`,
+            id: `msg-${messageIdCounter += 1}`,
             type: 'user',
             content: sanitizedContent,
         };
 
         session.messages.push(newUserMessage);
         session.status = 'thinking';
-        this._saveSessionToFile(sessionId);
+        this.saveSessionToFile(sessionId);
         return newUserMessage;
     }
 
-    private async _loadSessionsFromDir() {
+    private async loadSessionsFromDir() {
         try {
             const workspaceDirs = await fs.readdir(this.SESSIONS_DIR, { withFileTypes: true });
-            for (const workspaceDir of workspaceDirs) {
+            workspaceDirs.forEach(async (workspaceDir) => {
                 if (workspaceDir.isDirectory()) {
                     const workspaceId = workspaceDir.name;
-                    const sessionFiles = await fs.readdir(path.join(this.SESSIONS_DIR, workspaceId));
-                    for (const file of sessionFiles) {
-                        if (path.extname(file) === '.json') {
-                            const sessionId = path.basename(file, '.json');
+                    const sessionFiles = await fs.readdir(join(this.SESSIONS_DIR, workspaceId));
+                    sessionFiles.forEach(async (file) => {
+                        if (extname(file) === '.json') {
+                            const sessionId = basename(file, '.json');
                             try {
-                                const content = await fs.readFile(path.join(this.SESSIONS_DIR, workspaceId, file), 'utf-8');
+                                const content = await fs.readFile(join(this.SESSIONS_DIR, workspaceId, file), 'utf-8');
                                 const sessionData: SessionData = JSON.parse(content);
                                 const inMemorySession: InMemorySession = {
                                     ...sessionData,
@@ -490,28 +517,29 @@ export class SessionManager {
                                 logger.error({ err: error, sessionId, file }, `Error loading session file ${file}`);
                             }
                         }
-                    }
+                    });
                 }
-            }
+            });
         } catch (error) {
             if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
                 logger.error({ err: error }, 'Error loading sessions from disk');
             }
-
         }
-        this._updateMessageIdCounter();
+        this.updateMessageIdCounter();
     }
 
-    private _transformMcpServers(mcpServers: Record<string, { command: string; args: string[]; env: Record<string, string> }> = {}) {
+    private static transformMcpServers(
+        mcpServers: Record<string, { command: string; args: string[]; env: Record<string, string> }> = {},
+    ) {
         const serverList = Object.entries(mcpServers);
 
         const transformedServers = serverList.map(([name, serverConfig]) => {
-            const transformedEnv = Object.entries(serverConfig.env).map(([envName, envValue]) => {
-                return { name: envName, value: envValue };
-            });
+            const transformedEnv = Object.entries(serverConfig.env).map(
+                ([envName, envValue]) => ({ name: envName, value: envValue }),
+            );
 
             return {
-                name: name,
+                name,
                 command: serverConfig.command,
                 args: serverConfig.args,
                 env: transformedEnv,
@@ -528,19 +556,22 @@ export class SessionManager {
         }
 
         const globalSettings = await loadSettings(this.workspaceManager.sumikaDir);
-        const mergedServers = { ...(globalSettings.mcpServers || {}), ...(workspace.mcpServers || {}) };
-        const mcpServers = this._transformMcpServers(mergedServers);
+        const mergedServers = { ...(globalSettings.mcpServers ?? {}), ...(workspace.mcpServers ?? {}) };
+        const mcpServers = SessionManager.transformMcpServers(mergedServers);
 
         if (!this.acpProcess) {
             throw new Error('ACP process is not initialized');
         }
 
         const result = await this.acpProcess.newSession({ cwd: workspace.path, mcpServers });
-        const sessionId = result.sessionId as string;
+        if (!result || typeof result !== 'object' || !('sessionId' in result) || typeof result.sessionId !== 'string') {
+            throw new Error('Invalid session response from ACP process');
+        }
+        const { sessionId } = result;
 
         const newSession: InMemorySession = {
             id: sessionId,
-            workspaceId: workspaceId,
+            workspaceId,
             name: 'Untitled Session',
             messages: [],
             pinned: false,
@@ -552,7 +583,7 @@ export class SessionManager {
 
         this.sessions.set(sessionId, newSession);
         this.acpToLogical.set(sessionId, sessionId);
-        await this._saveSessionToFile(sessionId);
+        this.saveSessionToFile(sessionId);
         return sessionId;
     }
 
@@ -566,15 +597,18 @@ export class SessionManager {
         }
 
         const globalSettings = await loadSettings(this.workspaceManager.sumikaDir);
-        const mergedServers = { ...(globalSettings.mcpServers || {}), ...(workspace.mcpServers || {}) };
-        const mcpServers = this._transformMcpServers(mergedServers);
+        const mergedServers = { ...(globalSettings.mcpServers ?? {}), ...(workspace.mcpServers ?? {}) };
+        const mcpServers = SessionManager.transformMcpServers(mergedServers);
 
         if (!this.acpProcess) {
             throw new Error('ACP process is not initialized');
         }
 
         const result = await this.acpProcess.newSession({ cwd: workspace.path, mcpServers });
-        const newAcpId = result.sessionId as string;
+        if (!result || typeof result !== 'object' || !('sessionId' in result) || typeof result.sessionId !== 'string') {
+            throw new Error('Invalid session response from ACP process');
+        }
+        const newAcpId = result.sessionId;
         if (existing.acpSessionId) {
             this.acpToLogical.delete(existing.acpSessionId);
         }
@@ -583,7 +617,7 @@ export class SessionManager {
         existing.status = 'idle';
         existing.isUpdating = false;
         this.acpToLogical.set(newAcpId, sessionId);
-        this._saveSessionToFile(sessionId);
+        this.saveSessionToFile(sessionId);
         return sessionId;
     }
 
@@ -593,14 +627,14 @@ export class SessionManager {
             throw new Error(`Original session with ID ${originalSessionId} not found.`);
         }
 
-        const branchFromIndex = originalSession.messages.findIndex(m => m.id === branchFromMessageId);
+        const branchFromIndex = originalSession.messages.findIndex((m) => m.id === branchFromMessageId);
         if (branchFromIndex === -1) {
             throw new Error(`Message with ID ${branchFromMessageId} not found in session ${originalSessionId}.`);
         }
 
         const messageToBranchFrom = originalSession.messages[branchFromIndex];
         if (messageToBranchFrom.type !== 'agent') {
-            throw new Error(`Branching is only supported from agent messages.`);
+            throw new Error('Branching is only supported from agent messages.');
         }
 
         const newHistory = originalSession.messages.slice(0, branchFromIndex + 1);
@@ -613,30 +647,32 @@ export class SessionManager {
             throw new Error('Failed to create and retrieve the new session.');
         }
 
-        const branchTagRegex = /^\(Branch @ [^\)]+\) /;
+        const branchTagRegex = /^\(Branch @ [^)]+\) /;
         const baseName = originalSession.name.replace(branchTagRegex, '');
         newSession.name = `(Branch @ ${new Date().toLocaleTimeString()}) ${baseName}`;
         newSession.messages = newHistory;
 
-        await this._saveSessionToFile(newSessionId);
+        this.saveSessionToFile(newSessionId);
 
-
-        return this.getSession(newSessionId)!;
+        const newSessionData = this.getSession(newSessionId);
+        if (!newSessionData) {
+            throw new Error('Failed to retrieve the new session data.');
+        }
+        return newSessionData;
     }
 
     public async initialize(): Promise<void> {
         if (this.acpProcess) return;
 
-
         let settings;
         try {
             settings = await loadSettings(this.workspaceManager.sumikaDir);
-        } catch (e) {
+        } catch (_e) {
             settings = { env: {}, mcpServers: {} };
         }
 
         const process = new AcpProcess({
-            onExit: (code) => {
+            onExit: (code: number | null) => {
                 logger.error({ code }, `--- SessionManager: Central AcpProcess exited with code ${code} ---`);
                 this.handleProcessCrash();
             },
@@ -645,14 +681,13 @@ export class SessionManager {
         });
 
         await process.connect();
-        this._setupEventHandlers(process);
+        this.setupEventHandlers(process);
         this.acpProcess = process;
     }
 
     public restartAgentProcess(): void {
         logger.info('--- SessionManager: Received request to restart agent process ---');
         if (this.acpProcess) {
-
             this.acpProcess.kill();
         } else {
             this.handleProcessCrash();
@@ -660,34 +695,36 @@ export class SessionManager {
     }
 
     private handleProcessCrash(): void {
-
         this.acpToLogical.clear();
-        for (const [sessionId, session] of this.sessions.entries()) {
-            session.status = 'disconnected';
+        this.sessions.forEach((session, sessionId) => {
+            const mutableSession = session;
+            mutableSession.status = 'disconnected';
             try {
-                this._saveSessionToFile(sessionId);
+                this.saveSessionToFile(sessionId);
 
-                if (session.streamController) {
+                if (mutableSession.streamController) {
                     try {
-                        session.streamController.write(JSON.stringify({ type: 'error', error: 'Agent process crashed. Session disconnected.' }) + '\n');
-                    } catch {}
+                        mutableSession.streamController.write(`${JSON.stringify({ type: 'error', error: 'Agent process crashed. Session disconnected.' })}\n`);
+                    } catch {
+                        // Ignore errors
+                    }
                 }
-            } catch {}
-        }
-
+            } catch {
+                // Ignore errors
+            }
+        });
 
         this.acpProcess = undefined;
-        this.initialize().catch(err => {
+        this.initialize().catch((err) => {
             logger.error({ err }, 'Failed to restart ACP process');
         });
     }
 
-    private _composePrompt(sessionId: string, currentContent: PromptContent[]): PromptContent[] {
+    private composePrompt(sessionId: string, currentContent: PromptContent[]): PromptContent[] {
         const session = this.sessions.get(sessionId);
         if (!session) {
             return currentContent;
         }
-
 
         let lastSummaryIndex = -1;
         for (let i = session.messages.length - 1; i >= 0; i--) {
@@ -698,29 +735,26 @@ export class SessionManager {
         }
 
         let messagesToCompose: Message[];
-        let useDefaultHeader = true;
+        const useDefaultHeader = true;
 
         if (lastSummaryIndex !== -1) {
-
             if (lastSummaryIndex === session.messages.length - 1) {
                 messagesToCompose = [session.messages[lastSummaryIndex]];
             } else {
                 messagesToCompose = session.messages.slice(lastSummaryIndex);
             }
-
         } else {
-
             messagesToCompose = [...session.messages];
         }
 
+        const historyContent = this.messagesToPromptContent(messagesToCompose);
 
-        const historyContent = this._messagesToPromptContent(messagesToCompose);
-        
         if (historyContent.length > 0 && useDefaultHeader) {
             const historyHeader: PromptContent = { type: 'text', text: '# Chat History\n\n' };
             const historyFooter: PromptContent = { type: 'text', text: '\n---\n' };
             return [historyHeader, ...historyContent, historyFooter, ...currentContent];
-        } else if (historyContent.length > 0) {
+        }
+        if (historyContent.length > 0) {
             return [...historyContent, ...currentContent];
         }
 
@@ -732,20 +766,17 @@ export class SessionManager {
         if (!session) throw new Error('Session not found');
         if (!this.acpProcess) throw new Error('Agent not initialized');
 
-
-        const currentAcpId = session.acpSessionId || sessionId;
+        const currentAcpId = session.acpSessionId ?? sessionId;
         if (!this.acpToLogical.has(currentAcpId)) {
             await this.reloadSession(sessionId);
         }
-        
 
-        const finalContent = session.isNewProcess ? this._composePrompt(sessionId, content) : content;
-
+        const finalContent = session.isNewProcess ? this.composePrompt(sessionId, content) : content;
 
         this.markHistoryAsSent(sessionId);
 
         const refreshed = this.sessions.get(sessionId);
-        const acpId = refreshed?.acpSessionId || session.acpSessionId || sessionId;
+        const acpId = refreshed?.acpSessionId ?? session.acpSessionId ?? sessionId;
         this.acpProcess.prompt(acpId, { prompt: finalContent });
     }
 
@@ -758,9 +789,8 @@ export class SessionManager {
         }
 
         const originalMessages = [...session.messages];
-        const originalCharCount = originalMessages.map(m => JSON.stringify(m)).join('').length;
+        const originalCharCount = originalMessages.map((m) => JSON.stringify(m)).join('').length;
         logger.debug({ sessionId, originalCharCount, messageCount: originalMessages.length }, 'Original history stats.');
-
 
         let charCount = 0;
         let splitIndex = -1;
@@ -778,7 +808,6 @@ export class SessionManager {
         }
         logger.debug({ sessionId, initialSplitIndex: splitIndex }, 'Calculated initial split index.');
 
-
         let finalSplitIndex = -1;
         for (let i = splitIndex; i >= 0; i--) {
             if (originalMessages[i].type === 'user') {
@@ -786,7 +815,6 @@ export class SessionManager {
                 break;
             }
         }
-
 
         if (finalSplitIndex === -1) {
             logger.warn({ sessionId }, 'Compression failed: no user turn found in the history segment to be summarized.');
@@ -803,38 +831,56 @@ export class SessionManager {
         const historyToKeep = originalMessages.slice(splitIndex);
         logger.debug({ sessionId, toSummarize: historyToSummarize.length, toKeep: historyToKeep.length }, 'History segmented.');
 
-
         try {
             const tempSessionId = `temp-compression-${Date.now()}`;
             const summaryPrompt: PromptContent[] = [
-                ...this._messagesToPromptContent(historyToSummarize),
+                ...this.messagesToPromptContent(historyToSummarize),
                 { type: 'text', text: COMPRESSION_PROMPT },
             ];
-            
 
             const workspace = this.workspaceManager.getWorkspace(session.workspaceId);
             if (!workspace) throw new Error('Workspace not found');
             const tempAcpSession = await this.acpProcess.newSession({ cwd: workspace.path, mcpServers: [] });
+            if (!tempAcpSession || typeof tempAcpSession !== 'object' || !('sessionId' in tempAcpSession) || typeof tempAcpSession.sessionId !== 'string') {
+                throw new Error('Invalid session response from ACP process');
+            }
             const tempAcpId = tempAcpSession.sessionId;
             this.acpToLogical.set(tempAcpId, tempSessionId);
-            
-            const responsePromise = new Promise<string>((resolve, reject) => {
+
+            const responsePromise = new Promise<string>((resolvePromise, reject) => {
                 let summaryText = '';
-                const onChunk = (data: any) => {
-                    if (data.sessionId === tempAcpId && data.sessionUpdate === 'agent_message_chunk') {
+                const onChunk = (data: unknown) => {
+                    if (
+                        typeof data === 'object'
+                        && data
+                        && 'sessionId' in data
+                        && data.sessionId === tempAcpId
+                        && 'sessionUpdate' in data
+                        && data.sessionUpdate === 'agent_message_chunk'
+                    ) {
                         summaryText += data.content.text;
                     }
                 };
-                const onEnd = (data: any) => {
-                    if (data.sessionId === tempAcpId) {
+                const onEnd = (data: unknown) => {
+                    if (
+                        typeof data === 'object'
+                        && data
+                        && 'sessionId' in data
+                        && data.sessionId === tempAcpId
+                    ) {
                         this.acpProcess?.off('chunk', onChunk);
                         this.acpProcess?.off('end', onEnd);
                         this.acpProcess?.off('error', onError);
-                        resolve(summaryText);
+                        resolvePromise(summaryText);
                     }
                 };
-                const onError = (data: any) => {
-                     if (data.sessionId === tempAcpId) {
+                const onError = (data: unknown) => {
+                    if (
+                        typeof data === 'object'
+                        && data
+                        && 'sessionId' in data
+                        && data.sessionId === tempAcpId
+                    ) {
                         this.acpProcess?.off('chunk', onChunk);
                         this.acpProcess?.off('end', onEnd);
                         this.acpProcess?.off('error', onError);
@@ -851,14 +897,13 @@ export class SessionManager {
             await this.acpProcess.prompt(tempAcpId, { prompt: summaryPrompt });
             const summaryText = await responsePromise;
 
-            const summaryMatch = summaryText.match(/<state_snapshot>([\s\S]*)<\/state_snapshot>/);
+            const summaryMatch = /<state_snapshot>([\s\S]*)<\/state_snapshot>/.exec(summaryText);
             if (!summaryMatch) {
-                logger.error({ sessionId, response: summaryText }, "Compression failed: could not find <state_snapshot> in model response.");
+                logger.error({ sessionId, response: summaryText }, 'Compression failed: could not find <state_snapshot> in model response.');
                 throw new Error("The agent's summary was malformed. Please try again.");
             }
             const extractedSummary = summaryMatch[0];
             logger.debug({ sessionId }, 'Successfully extracted summary from agent response.');
-
 
             const summaryMessage: Message = {
                 id: `compression-${Date.now()}`,
@@ -873,26 +918,22 @@ export class SessionManager {
                 ...historyToKeep,
             ];
 
-
             const originalPromptCharCount = _getPromptCharCount(this._composePrompt(sessionId, []));
-
 
             session.messages = newMessages;
             const newCharCount = _getPromptCharCount(this._composePrompt(sessionId, []));
-            
+
             logger.debug({ sessionId, newPromptCharCount: newCharCount, originalPromptCharCount }, 'Safety check comparison.');
             if (newCharCount >= originalPromptCharCount) {
-                logger.warn({ sessionId, newCharCount, originalPromptCharCount }, `Compression aborted: new prompt context is not smaller than original.`);
+                logger.warn({ sessionId, newCharCount, originalPromptCharCount }, 'Compression aborted: new prompt context is not smaller than original.');
 
                 return false;
             }
 
-
             this._saveSessionToFile(sessionId);
-            this._emitHistoryCompressed(sessionId, summaryMessage);
+            this.emitHistoryCompressed(sessionId, summaryMessage);
             logger.debug({ sessionId, newCharCount }, 'History compression successful.');
             return true;
-
         } catch (error) {
             logger.error({ err: error, sessionId }, 'Error during history compression.');
 
@@ -900,14 +941,14 @@ export class SessionManager {
         }
     }
 
-    private _messagesToPromptContent(messages: Message[]): PromptContent[] {
+    private messagesToPromptContent(messages: Message[]): PromptContent[] {
         const content: PromptContent[] = [];
         for (const m of messages) {
             if (m.type === 'thought') continue;
             let messageText = '';
             switch (m.type) {
                 case 'user':
-                    messageText = m.content.map(c => {
+                    messageText = m.content.map((c) => {
                         if (c.type === 'text') return c.text;
                         if (c.type === 'resource') return `[Embedded File: ${c.resource.uri}]`;
                         return '';
@@ -946,18 +987,20 @@ export class SessionManager {
     }
 
     public getAllSessions(options: { workspaceId?: string; limit?: number; offset?: number; view?: 'summary' | 'full' } = {}): SessionData[] {
-        const { workspaceId, limit = 20, offset = 0, view = 'full' } = options;
+        const {
+            workspaceId, limit = 20, offset = 0, view = 'full',
+        } = options;
 
         const allSessions = Array.from(this.sessions.values())
             .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
-        let filtered = workspaceId 
-            ? allSessions.filter(s => s.workspaceId === workspaceId)
+        const filtered = workspaceId
+            ? allSessions.filter((s) => s.workspaceId === workspaceId)
             : allSessions;
 
         const paginated = filtered.slice(offset, offset + limit);
-            
-        return paginated.map(s => {
+
+        return paginated.map((s) => {
             const { streamController, ...rest } = s;
             if (view === 'summary') {
                 if (rest.messages && rest.messages.length > 0) {
@@ -988,14 +1031,14 @@ export class SessionManager {
         if (!session) return;
 
         const message = session.messages.find(
-            (m): m is ToolCallMessage => m.type === 'tool_call' && m.requestId === requestId
+            (m): m is ToolCallMessage => m.type === 'tool_call' && m.requestId === requestId,
         );
 
         if (message) {
             message.selectedOptionId = optionId;
 
-            const selectedOption = message.options?.find(opt => opt.optionId === optionId);
-            if (selectedOption && selectedOption.kind.startsWith('reject')) {
+            const selectedOption = message.options?.find((opt) => opt.optionId === optionId);
+            if (selectedOption?.kind.startsWith('reject')) {
                 message.status = 'cancelled';
                 session.status = 'idle';
             }
@@ -1016,7 +1059,7 @@ export class SessionManager {
         }
 
         this._saveSessionToFile(sessionId);
-        
+
         const { streamController, ...rest } = session;
         return rest;
     }
@@ -1044,8 +1087,6 @@ export class SessionManager {
         }
     }
 
-
-
     public exportSessionToMarkdown(sessionId: string, options?: { excludeTypes?: string[] }): string {
         const session = this.sessions.get(sessionId);
         if (!session) return '';
@@ -1057,7 +1098,7 @@ export class SessionManager {
             }
             switch (message.type) {
                 case 'user':
-                    const userText = message.content.map(c => {
+                    const userText = message.content.map((c) => {
                         if (c.type === 'text') return c.text;
                         if (c.type === 'resource') return `[Embedded File: ${c.resource.uri}]`;
                         return '';
@@ -1076,7 +1117,7 @@ export class SessionManager {
                         if (message.selectedOptionId) {
                             markdown += `*User responded: ${message.selectedOptionId}*\n\n`;
                         } else {
-                            markdown += `*Awaiting user response.*\n\n`;
+                            markdown += '*Awaiting user response.*\n\n';
                         }
                     } else {
                         markdown += `## Tool Call: \`${message.title}\`\n`;
@@ -1094,7 +1135,7 @@ export class SessionManager {
         return markdown;
     }
 
-    private _saveSessionToFile(sessionId: string) {
+    private saveSessionToFile(sessionId: string) {
         this._debouncedSave(sessionId);
     }
 
@@ -1102,7 +1143,7 @@ export class SessionManager {
         const session = this.sessions.get(sessionId);
         if (!session) return;
         try {
-            const filePath = path.join(this.SESSIONS_DIR, session.workspaceId, `${sessionId}.json`);
+            const filePath = join(this.SESSIONS_DIR, session.workspaceId, `${sessionId}.json`);
             await fs.unlink(filePath);
         } catch (error) {
             if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {

@@ -1,27 +1,31 @@
-import { expect, test, afterEach, beforeEach, vi } from 'vitest';
-import { AcpProcess } from './acp';
-import { EventEmitter } from 'events';
-import { promises as fs } from 'fs';
-import * as path from 'path';
-import { EOL } from 'os';
-import * as os from 'os';
+import { EventEmitter } from 'node:events';
+import { promises as fs } from 'node:fs';
+import { EOL, tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import {
+    afterEach, beforeEach,
+    expect, test, vi,
+} from 'vitest';
+
+import AcpProcess from './acp';
 
 let acpProcess: AcpProcess;
 let testDir: string;
 
 beforeEach(async () => {
-    const tempDirPrefix = path.join(os.tmpdir(), 'acp-test-');
+    const tempDirPrefix = join(tmpdir(), 'acp-test-');
     testDir = await fs.mkdtemp(tempDirPrefix);
-    acpProcess = new AcpProcess({ onExit: (code) => {} });
+    acpProcess = new AcpProcess({ onExit: (_code: number | null) => {} });
 });
 
 afterEach(async () => {
-  if (acpProcess) {
-    acpProcess.kill();
-  }
-  if (testDir) {
-    await fs.rm(testDir, { recursive: true, force: true });
-  }
+    if (acpProcess) {
+        acpProcess.kill();
+    }
+    if (testDir) {
+        await fs.rm(testDir, { recursive: true, force: true });
+    }
 });
 
 test('should be an event emitter', () => {
@@ -30,45 +34,51 @@ test('should be an event emitter', () => {
 
 test('should emit a permission_request event for a tool call', async () => {
     const mockToolCallRequest = {
-        jsonrpc: '2.0',
+        jsonrpc: '2.0' as const,
         method: 'session/request_permission',
         id: 123,
         params: {
             sessionId: 'mock-session-id',
-            toolCall: { toolCallId: 'tool-call-abc', title: 'Read file' }
-        }
+            toolCall: { toolCallId: 'tool-call-abc', title: 'Read file' },
+        },
     };
-    const permissionPromise = new Promise(resolve => {
-        acpProcess.on('permission_request', (request) => {
+    const permissionPromise = new Promise((resolve) => {
+        acpProcess.on('permission_request', (request: { toolCall: unknown; requestId: unknown }) => {
             expect(request.toolCall).toEqual(mockToolCallRequest.params.toolCall);
             expect(request.requestId).toBe(mockToolCallRequest.id);
             resolve(request);
         });
     });
-    (acpProcess as any).handleMessage(mockToolCallRequest);
+    // eslint-disable-next-line @typescript-eslint/dot-notation
+    acpProcess['handleMessage'](mockToolCallRequest);
     await permissionPromise;
 });
 
 test('should handle fs/read_text_file and send back content', async () => {
-    const filePath = path.join(__dirname, 'test-file.txt');
+    const filePath = join(__dirname, 'test-file.txt');
     const fileContent = 'hello world';
-    await fs.writeFile(filePath, fileContent);
-
-    const writeSpy = vi.spyOn((acpProcess as any).process.stdin, 'write');
+    // eslint-disable-next-line @typescript-eslint/dot-notation
+    const { stdin } = acpProcess['process'];
+    if (!stdin) {
+        throw new Error('stdin is null');
+    }
+    const writeSpy = vi.spyOn(stdin, 'write');
 
     const mockReadFileRequest = {
-        jsonrpc: '2.0',
+        jsonrpc: '2.0' as const,
         method: 'fs/read_text_file',
         id: 456,
         params: {
             path: filePath,
-        }
+        },
     };
 
-    (acpProcess as any).handleMessage(mockReadFileRequest);
+    // eslint-disable-next-line @typescript-eslint/dot-notation
+    acpProcess['handleMessage'](mockReadFileRequest);
 
-    // Need to wait for the async file read to complete
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await new Promise((resolve) => {
+        setTimeout(resolve, 100);
+    });
 
     const expectedResponse = {
         jsonrpc: '2.0',
@@ -82,25 +92,32 @@ test('should handle fs/read_text_file and send back content', async () => {
 });
 
 test('should handle fs/write_text_file and send back success', async () => {
-    const filePath = path.join(__dirname, 'test-write-file.txt');
+    const filePath = join(__dirname, 'test-write-file.txt');
     const fileContent = 'hello from write file';
 
-    const writeSpy = vi.spyOn((acpProcess as any).process.stdin, 'write');
+    // eslint-disable-next-line @typescript-eslint/dot-notation
+    const { stdin } = acpProcess['process'];
+    if (!stdin) {
+        throw new Error('stdin is null');
+    }
+    const writeSpy = vi.spyOn(stdin, 'write');
 
     const mockWriteFileRequest = {
-        jsonrpc: '2.0',
+        jsonrpc: '2.0' as const,
         method: 'fs/write_text_file',
         id: 789,
         params: {
             path: filePath,
             content: fileContent,
-        }
+        },
     };
 
-    (acpProcess as any).handleMessage(mockWriteFileRequest);
+    // eslint-disable-next-line @typescript-eslint/dot-notation
+    acpProcess['handleMessage'](mockWriteFileRequest);
 
-    // Need to wait for the async file write to complete
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await new Promise((resolve) => {
+        setTimeout(resolve, 100);
+    });
 
     const expectedResponse = {
         jsonrpc: '2.0',

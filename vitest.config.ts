@@ -10,5 +10,5 @@ export default defineConfig({
         'zed/**'
     ],
     setupFiles: ['./src/test-setup.ts'],
-    },
+  },
 });

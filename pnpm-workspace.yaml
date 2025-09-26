@@ -3,3 +3,4 @@ onlyBuiltDependencies:
   - esbuild
   - node-pty
   - protobufjs
+  - unrs-resolver

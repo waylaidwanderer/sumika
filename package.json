@@ -14,7 +14,12 @@
   "scripts": {
     "test": "vitest run",
     "dev": "NODE_ENV=development tsx src/index.ts",
-    "build": "tsc"
+    "build": "tsc",
+    "lint": "eslint . --ext .ts",
+    "lint:fix": "eslint . --ext .ts --fix"
+  },
+  "engines": {
+    "node": ">=23.11.0"
   },
   "keywords": [],
   "author": "Joel (waylaidwanderer)",
@@ -29,16 +34,25 @@
   },
   "packageManager": "pnpm@10.16.1",
   "devDependencies": {
+    "@eslint/compat": "^1.4.0",
+    "@eslint/js": "^9.36.0",
+    "@stylistic/eslint-plugin": "^3.1.0",
     "@types/lodash": "^4.17.20",
     "@types/node": "^24.3.0",
-    "hono": "^4.9.5",
+    "eslint": "^9.36.0",
+    "eslint-config-airbnb-extended": "^2.3.1",
+    "eslint-import-resolver-typescript": "^4.4.4",
+    "eslint-plugin-import-x": "^4.16.1",
+    "eslint-plugin-n": "^17.23.1",
     "pino-pretty": "^13.1.1",
     "ts-node": "^10.9.2",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2",
+    "typescript-eslint": "^8.44.1",
     "vitest": "^3.2.4"
   },
   "dependencies": {
+    "hono": "^4.9.5",
     "@google/gemini-cli": "0.7.0-nightly.20250918.2722473a",
     "@hono/node-server": "^1.19.1",
     "@hono/swagger-ui": "^0.5.2",

@@ -1,20 +1,29 @@
-import { expect, test, describe, beforeEach, afterEach } from 'vitest';
-import app, { initializeApp, resetState } from '../index';
-import { workspaceManager } from '../managers';
-import { promises as fs } from 'fs';
-import * as path from 'path';
-import * as os from 'os';
+import { promises as fs } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import {
+    afterEach,
+    beforeEach,
+    describe,
+    expect, test,
+} from 'vitest';
+
+import app, { initializeApp, resetState } from '..';
+import { getWorkspaceManager } from '../managers';
+
+import type { Workspace } from '@waylaidwanderer/sumika-types';
 
 let testHomeDir: string;
 
 describe('Workspace API', () => {
-    let testWorkspace: any;
+    let testWorkspace: Workspace;
 
     beforeEach(async () => {
-        testHomeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'sumika-w-routes-test-'));
+        testHomeDir = await fs.mkdtemp(join(tmpdir(), 'sumika-w-routes-test-'));
         resetState(testHomeDir);
         await initializeApp(testHomeDir);
-        testWorkspace = await workspaceManager.createWorkspace('Test Workspace');
+        testWorkspace = await getWorkspaceManager().createWorkspace('Test Workspace');
     });
 
     afterEach(async () => {
@@ -31,7 +40,7 @@ describe('Workspace API', () => {
                     'my-tool': {
                         command: 'python',
                         args: ['-m', 'my_tool_server'],
-                        env: { 'PYTHONUNBUFFERED': '1' },
+                        env: { PYTHONUNBUFFERED: '1' },
                     },
                 },
             };
@@ -48,7 +57,7 @@ describe('Workspace API', () => {
             expect(json.name).toBe('Updated Workspace Name');
             expect(json.mcpServers).toEqual(updates.mcpServers);
 
-            const updatedWorkspace = workspaceManager.getWorkspace(testWorkspace.id);
+            const updatedWorkspace = getWorkspaceManager().getWorkspace(testWorkspace.id);
             expect(updatedWorkspace?.mcpServers).toEqual(updates.mcpServers);
         });
 
@@ -74,18 +83,17 @@ describe('Workspace API', () => {
     });
 });
 
-
 describe('Workspace File Upload API', () => {
-    let testWorkspace: any;
+    let testWorkspace: Workspace;
     const testFileName = 'test-file.txt';
     const testFileContent = 'hello world';
 
     beforeEach(async () => {
-        testHomeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'sumika-w-routes-test-'));
+        testHomeDir = await fs.mkdtemp(join(tmpdir(), 'sumika-w-routes-test-'));
         resetState(testHomeDir);
         await initializeApp(testHomeDir);
-        testWorkspace = await workspaceManager.createWorkspace('Test Workspace');
-        await fs.writeFile(path.join(testWorkspace.path, testFileName), testFileContent);
+        testWorkspace = await getWorkspaceManager().createWorkspace('Test Workspace');
+        await fs.writeFile(join(testWorkspace.path, testFileName), testFileContent);
     });
 
     afterEach(async () => {
@@ -131,7 +139,7 @@ describe('Workspace File Upload API', () => {
         });
         const res = await app.request(req);
         expect(res.status).toBe(201);
-        const finalContent = await fs.readFile(path.join(testWorkspace.path, testFileName), 'utf-8');
+        const finalContent = await fs.readFile(join(testWorkspace.path, testFileName), 'utf-8');
         expect(finalContent).toBe(newContent);
     });
 
@@ -163,13 +171,13 @@ describe('Workspace File Upload API', () => {
 });
 
 describe('Workspace File Search API', () => {
-    let testWorkspace: any;
+    let testWorkspace: Workspace;
 
     beforeEach(async () => {
-        testHomeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'sumika-w-search-routes-test-'));
+        testHomeDir = await fs.mkdtemp(join(tmpdir(), 'sumika-w-search-routes-test-'));
         resetState(testHomeDir);
         await initializeApp(testHomeDir);
-        testWorkspace = await workspaceManager.createWorkspace('Search Test Workspace');
+        testWorkspace = await getWorkspaceManager().createWorkspace('Search Test Workspace');
     });
 
     afterEach(async () => {
@@ -179,14 +187,14 @@ describe('Workspace File Search API', () => {
     });
 
     test('should respect .gitignore rules', async () => {
-        // 1. Setup the workspace with an ignored directory and files
+    // 1. Setup the workspace with an ignored directory and files
         const gitignoreContent = 'ignored_dir/';
-        await fs.writeFile(path.join(testWorkspace.path, '.gitignore'), gitignoreContent);
+        await fs.writeFile(join(testWorkspace.path, '.gitignore'), gitignoreContent);
 
-        const ignoredDir = path.join(testWorkspace.path, 'ignored_dir');
+        const ignoredDir = join(testWorkspace.path, 'ignored_dir');
         await fs.mkdir(ignoredDir);
-        await fs.writeFile(path.join(ignoredDir, 'ignored-file.txt'), 'should not be found');
-        await fs.writeFile(path.join(testWorkspace.path, 'visible-file.txt'), 'should be found');
+        await fs.writeFile(join(ignoredDir, 'ignored-file.txt'), 'should not be found');
+        await fs.writeFile(join(testWorkspace.path, 'visible-file.txt'), 'should be found');
 
         // 2. Search for the ignored file
         const ignoredReq = new Request(`http://localhost/api/workspaces/${testWorkspace.id}/files/search?query=ignored-file`);
@@ -204,7 +212,7 @@ describe('Workspace File Search API', () => {
     });
 
     test('should work correctly with no .gitignore file', async () => {
-        await fs.writeFile(path.join(testWorkspace.path, 'a-file.txt'), 'content');
+        await fs.writeFile(join(testWorkspace.path, 'a-file.txt'), 'content');
         const req = new Request(`http://localhost/api/workspaces/${testWorkspace.id}/files/search?query=a-file`);
         const res = await app.request(req);
         expect(res.status).toBe(200);
@@ -213,9 +221,9 @@ describe('Workspace File Search API', () => {
     });
 
     test('should respect default ignores even with no .gitignore file', async () => {
-        const nodeModulesDir = path.join(testWorkspace.path, 'node_modules');
+        const nodeModulesDir = join(testWorkspace.path, 'node_modules');
         await fs.mkdir(nodeModulesDir);
-        await fs.writeFile(path.join(nodeModulesDir, 'a-package.js'), 'content');
+        await fs.writeFile(join(nodeModulesDir, 'a-package.js'), 'content');
 
         const req = new Request(`http://localhost/api/workspaces/${testWorkspace.id}/files/search?query=a-package`);
         const res = await app.request(req);
@@ -226,12 +234,12 @@ describe('Workspace File Search API', () => {
 
     test('should handle negation patterns in .gitignore', async () => {
         const gitignoreContent = 'dist/\n!dist/important.js';
-        await fs.writeFile(path.join(testWorkspace.path, '.gitignore'), gitignoreContent);
+        await fs.writeFile(join(testWorkspace.path, '.gitignore'), gitignoreContent);
 
-        const distDir = path.join(testWorkspace.path, 'dist');
+        const distDir = join(testWorkspace.path, 'dist');
         await fs.mkdir(distDir);
-        await fs.writeFile(path.join(distDir, 'ignored.js'), 'content');
-        await fs.writeFile(path.join(distDir, 'important.js'), 'content');
+        await fs.writeFile(join(distDir, 'ignored.js'), 'content');
+        await fs.writeFile(join(distDir, 'important.js'), 'content');
 
         // Search for the ignored file
         const ignoredReq = new Request(`http://localhost/api/workspaces/${testWorkspace.id}/files/search?query=ignored`);

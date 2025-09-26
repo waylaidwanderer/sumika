@@ -1,0 +1,85 @@
+import path from 'node:path';
+
+import { includeIgnoreFile } from '@eslint/compat';
+import js from '@eslint/js';
+import { configs, plugins, rules } from 'eslint-config-airbnb-extended';
+
+const gitignorePath = path.resolve('.', '.gitignore');
+
+const jsConfig = [
+    // ESLint Recommended Rules
+    {
+        name: 'js/config',
+        ...js.configs.recommended,
+    },
+    // Stylistic Plugin
+    plugins.stylistic,
+    // Import X Plugin
+    plugins.importX,
+    // Airbnb Base Recommended Config
+    ...configs.base.recommended,
+    // Strict Import Config
+    rules.base.importsStrict,
+];
+
+const nodeConfig = [
+    // Node Plugin
+    plugins.node,
+    // Airbnb Node Recommended Config
+    ...configs.node.recommended,
+];
+
+const typescriptConfig = [
+    // TypeScript ESLint Plugin
+    plugins.typescriptEslint,
+    // Airbnb Base TypeScript Config
+    ...configs.base.typescript,
+    // Strict TypeScript Config
+    rules.typescript.typescriptEslintStrict,
+];
+
+export default [
+    // Ignore .gitignore files/folder in eslint
+    includeIgnoreFile(gitignorePath),
+    // Ignores vitest.config.ts
+    {
+        ignores: ['vitest.config.ts'],
+    },
+    // Javascript Config
+    ...jsConfig,
+    // Node Config
+    ...nodeConfig,
+    // TypeScript Config
+    ...typescriptConfig,
+    // Custom Rules
+    {
+        rules: {
+            '@stylistic/indent': ['error', 4],
+            '@stylistic/max-len': ['error', {
+                code: 120,
+                ignoreStrings: true,
+                ignoreTemplateLiterals: true,
+            }],
+            '@typescript-eslint/no-unused-vars': ['warn', {
+                argsIgnorePattern: '^_',
+                varsIgnorePattern: '^_',
+                caughtErrorsIgnorePattern: '^_',
+            }],
+            'no-plusplus': ['error', { allowForLoopAfterthoughts: true }],
+        },
+    },
+    {
+        files: [
+            '**/*.test.ts',
+            '**/*.spec.ts',
+            'src/test-setup.ts',
+            'vitest.config.ts',
+            'eslint.config.mjs',
+        ],
+        rules: {
+            'import-x/no-extraneous-dependencies': ['error', {
+                devDependencies: true,
+            }],
+        },
+    },
+];

@@ -1,12 +1,16 @@
-import { promises as fs } from 'fs';
-import * as path from 'path';
-import { SettingsSchema, type Settings } from '@waylaidwanderer/sumika-types';
-import { logger } from './logger';
+import { promises as fs } from 'node:fs';
+import { join } from 'node:path';
+
+import { SettingsSchema } from '@waylaidwanderer/sumika-types';
+
+import logger from './logger';
+
+import type { Settings } from '@waylaidwanderer/sumika-types';
 
 const SETTINGS_FILENAME = 'settings.json';
 
 export async function loadSettings(sumikaDir: string): Promise<Settings> {
-    const filePath = path.join(sumikaDir, SETTINGS_FILENAME);
+    const filePath = join(sumikaDir, SETTINGS_FILENAME);
     try {
         const data = await fs.readFile(filePath, 'utf-8');
         const parseResult = SettingsSchema.safeParse(JSON.parse(data));
@@ -32,12 +36,12 @@ export async function loadSettings(sumikaDir: string): Promise<Settings> {
 export async function saveSettings(sumikaDir: string, settings: Settings): Promise<void> {
     const dir = sumikaDir;
     await fs.mkdir(dir, { recursive: true });
-    const tempFilePath = path.join(dir, `${SETTINGS_FILENAME}.tmp`);
+    const tempFilePath = join(dir, `${SETTINGS_FILENAME}.tmp`);
     try {
         const validatedSettings = SettingsSchema.parse(settings);
         await fs.writeFile(tempFilePath, JSON.stringify(validatedSettings, null, 2), 'utf-8');
-        await fs.rename(tempFilePath, path.join(dir, SETTINGS_FILENAME));
-    } catch (error) {
+        await fs.rename(tempFilePath, join(dir, SETTINGS_FILENAME));
+    } catch {
         try {
             await fs.unlink(tempFilePath);
         } catch {

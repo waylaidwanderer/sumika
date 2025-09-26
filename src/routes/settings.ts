@@ -1,6 +1,7 @@
-import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
+import { createRoute, OpenAPIHono, z } from '@hono/zod-openapi';
 import { SettingsSchema } from '@waylaidwanderer/sumika-types';
-import { workspaceManager, sessionManager } from '../managers';
+
+import { getSessionManager, getWorkspaceManager } from '../managers';
 import { loadSettings, saveSettings } from '../settings';
 
 const settingsRoutes = new OpenAPIHono()
@@ -21,9 +22,9 @@ const settingsRoutes = new OpenAPIHono()
             },
         },
         async (c) => {
-            const settings = await loadSettings(workspaceManager.sumikaDir);
+            const settings = await loadSettings(getWorkspaceManager().sumikaDir);
             return c.json(settings);
-        }
+        },
     )
     .openapi(
         {
@@ -55,29 +56,28 @@ const settingsRoutes = new OpenAPIHono()
         },
         async (c) => {
             const payload = c.req.valid('json');
-            await saveSettings(workspaceManager.sumikaDir, payload);
-            const after = await loadSettings(workspaceManager.sumikaDir);
+            await saveSettings(getWorkspaceManager().sumikaDir, payload);
+            const after = await loadSettings(getWorkspaceManager().sumikaDir);
             return c.json(after);
-        }
+        },
     );
 
-export { settingsRoutes };
+export default settingsRoutes;
 
 const RestartAgentRoute = createRoute({
-  method: 'post',
-  path: '/restart-agent',
-  summary: 'Restart the agent process',
-  description: 'Restarts the underlying agent process to apply changes to environment variables or the custom agent command.',
-  responses: {
-    200: {
-      description: 'Agent restart initiated',
-      content: { 'application/json': { schema: z.object({ message: z.string() }) } },
+    method: 'post',
+    path: '/restart-agent',
+    summary: 'Restart the agent process',
+    description: 'Restarts the underlying agent process to apply changes to environment variables or the custom agent command.',
+    responses: {
+        200: {
+            description: 'Agent restart initiated',
+            content: { 'application/json': { schema: z.object({ message: z.string() }) } },
+        },
     },
-  },
 });
 
 settingsRoutes.openapi(RestartAgentRoute, async (c) => {
-  sessionManager.restartAgentProcess();
-  return c.json({ message: 'Agent restart initiated' }, 200);
+    getSessionManager().restartAgentProcess();
+    return c.json({ message: 'Agent restart initiated' }, 200);
 });
-
